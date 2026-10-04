@@ -142,7 +142,7 @@ namespace Apache.Hive.Service.Rpc.Thrift
         }
 
         ArrowBuffer validityBitmapBuffer = BitmapUtilities.GetValidityBitmapBuffer(ref nulls, length, out int nullCount);
-        Values = new BinaryArray(BinaryType.Default, length, new ArrowBuffer(offsetBuffer), values.Build(), validityBitmapBuffer, nullCount);
+        Values = new BinaryArray(BinaryType.Default, length, BitmapUtilities.ToNativeBuffer(offsetBuffer), values.Build(), validityBitmapBuffer, nullCount);
       }
       finally
       {

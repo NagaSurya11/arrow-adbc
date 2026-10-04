@@ -32,6 +32,11 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
             // This seems like a good idea to have the server timeout so it doesn't keep processing unnecessarily.
             // Set in combination with a CancellationToken.
             statement.QueryTimeout = QueryTimeoutSeconds;
+
+            // Run async so ExecuteStatement returns at once and the 500ms poll loop keeps the
+            // connection busy. Synchronously the socket is silent for the whole query, and the
+            // service mesh drops an idle TCP connection after 1h, which cancels the query.
+            statement.RunAsync = true;
         }
 
         public override string AssemblyName => HiveServer2Connection.s_assemblyName;

@@ -56,7 +56,19 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Thrift
                 int lastByteIndex = requiredBytes - 1;
                 nulls[lastByteIndex] = (byte)(s_bitMasks[remainingBits] & (byte)~nulls[lastByteIndex]);
             }
-            return new ArrowBuffer(nulls);
+            return ToNativeBuffer(nulls);
         }
+
+        /// <summary>
+        /// Copies <paramref name="data"/> into an allocator-owned (native) <see cref="ArrowBuffer"/>.
+        /// </summary>
+        /// <remarks>
+        /// Do not wrap a managed byte[] with <c>new ArrowBuffer(byte[])</c> for arrays that are exported over
+        /// the C data interface: such a buffer is exported by pinning the managed array (ArrowBuffer.TryExport
+        /// -> Memory.Pin()), which crashes with an access violation in the NativeAOT driver. A buffer built
+        /// through the allocator is exported by reference count instead.
+        /// </remarks>
+        internal static ArrowBuffer ToNativeBuffer(byte[] data) =>
+            new ArrowBuffer.Builder<byte>(data.Length).Append(data).Build();
     }
 }

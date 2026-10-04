@@ -119,7 +119,7 @@ namespace Apache.Hive.Service.Rpc.Thrift
         }
 
         ArrowBuffer validityBitmapBuffer = BitmapUtilities.GetValidityBitmapBuffer(ref nulls, length, out int nullCount);
-        Values = new DoubleArray(new ArrowBuffer(buffer), validityBitmapBuffer, length, nullCount, 0);
+        Values = new DoubleArray(BitmapUtilities.ToNativeBuffer(buffer), validityBitmapBuffer, length, nullCount, 0);
       }
       finally
       {

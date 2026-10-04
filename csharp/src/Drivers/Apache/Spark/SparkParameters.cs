@@ -55,11 +55,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         /// </summary>
         public const string TransportApi = "spark.api";
 
-        /// <summary>Kerberos service name, e.g. "kyuubi" (dbt profiles.yml's
-        /// `kerberos_service_name`), sent by dbt-oss as `spark.kerberos.service_name`. New,
-        /// not a rename — no legacy equivalent exists.</summary>
-        public const string KerberosServiceName = "spark.kerberos.service_name";
-
         // OIDC (OAuth2 client_credentials) options, sent by dbt as `spark.oidc.*` when
         // `spark.auth_type` is "oidc". The same request works for Keycloak and Azure
         // Entra ID; only the values differ (Azure: scope = "<api-uri>/.default").
@@ -153,8 +148,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         // that's the literal string dbt-oss sends as `spark.auth_type`.
         public const string Plain = "plain";
         public const string NoSasl = "nosasl";
-        public const string Ldap = "ldap";
-        public const string Kerberos = "kerberos";
         public const string Oidc = "oidc";
     }
 

@@ -17,6 +17,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
@@ -69,8 +70,7 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                             nameof(Properties));
                     break;
                 // Real-implement the auth types dbt-oss's Rust core actually sends for
-                // `method: thrift` (crates/dbt-auth/src/spark/mod.rs): PLAIN, NOSASL, LDAP,
-                // KERBEROS.
+                // `method: thrift` (crates/dbt-auth/src/spark/mod.rs): PLAIN, NOSASL, OIDC.
                 case SparkAuthType.Plain:
                     if (string.IsNullOrWhiteSpace(username))
                         throw new ArgumentException(
@@ -78,19 +78,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                             nameof(Properties));
                     break;
                 case SparkAuthType.NoSasl:
-                    break;
-                case SparkAuthType.Ldap:
-                    if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
-                        throw new ArgumentException(
-                            $"Parameter '{SparkParameters.AuthType}' is set to '{SparkAuthTypeConstants.Ldap}' but parameters '{AdbcOptions.Username}' or '{AdbcOptions.Password}' are not set. Please provide values for these parameters.",
-                            nameof(Properties));
-                    break;
-                case SparkAuthType.Kerberos:
-                    Properties.TryGetValue(SparkParameters.KerberosServiceName, out string? kerberosServiceNameForValidation);
-                    if (string.IsNullOrWhiteSpace(kerberosServiceNameForValidation))
-                        throw new ArgumentException(
-                            $"Parameter '{SparkParameters.AuthType}' is set to '{SparkAuthTypeConstants.Kerberos}' but parameter '{SparkParameters.KerberosServiceName}' is not set. Please provide a value for this parameter.",
-                            nameof(Properties));
                     break;
                 case SparkAuthType.Oidc:
                     SparkOidcTokenProvider.ValidateOptions(Properties);
@@ -186,7 +173,7 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                     TSaslTransport saslTransport = new(bufferedTransport, saslMechanism, config: new());
                     return new TFramedTransport(saslTransport);
 
-                // Real-implement PLAIN, NOSASL, LDAP, KERBEROS for the raw-binary-Thrift
+                // Real-implement PLAIN, NOSASL, OIDC for the raw-binary-Thrift
                 // transport — this is the actual auth-type contract dbt-oss's Rust core
                 // sends (see ValidateAuthentication above).
                 case SparkAuthType.Plain:
@@ -204,33 +191,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
 
                 case SparkAuthType.NoSasl:
                     return bufferedTransport;
-
-                case SparkAuthType.Ldap:
-                    {
-                        Properties.TryGetValue(AdbcOptions.Username, out string? ldapUsername);
-                        Properties.TryGetValue(AdbcOptions.Password, out string? ldapPassword);
-                        if (string.IsNullOrWhiteSpace(ldapUsername) || string.IsNullOrWhiteSpace(ldapPassword))
-                        {
-                            throw new InvalidOperationException($"'{AdbcOptions.Username}' and '{AdbcOptions.Password}' must be provided for LDAP authentication.");
-                        }
-                        // HiveServer2/Kyuubi's LDAP support validates credentials server-side via
-                        // an LDAP bind; the wire-level SASL mechanism is still PLAIN.
-                        PlainSaslMechanism ldapMechanism = new(ldapUsername!, ldapPassword!);
-                        TSaslTransport ldapSaslTransport = new(bufferedTransport, ldapMechanism, config: new());
-                        return new TFramedTransport(ldapSaslTransport);
-                    }
-
-                case SparkAuthType.Kerberos:
-                    {
-                        Properties.TryGetValue(SparkParameters.KerberosServiceName, out string? kerberosServiceName);
-                        if (string.IsNullOrWhiteSpace(kerberosServiceName))
-                        {
-                            throw new InvalidOperationException($"'{SparkParameters.KerberosServiceName}' must be provided for KERBEROS authentication.");
-                        }
-                        GssapiSaslMechanism gssapiMechanism = new(kerberosServiceName!, hostName!);
-                        TSaslTransport gssapiSaslTransport = new(bufferedTransport, gssapiMechanism, config: new());
-                        return new TFramedTransport(gssapiSaslTransport);
-                    }
 
                 case SparkAuthType.Oidc:
                     {
@@ -274,20 +234,17 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                 case SparkAuthType.UsernameOnly:
                 case SparkAuthType.Basic:
                 case SparkAuthType.Plain:
-                case SparkAuthType.Ldap:
                 case SparkAuthType.Empty when !string.IsNullOrEmpty(username):
                     request.Username = username!;
                     break;
                 case SparkAuthType.Oidc:
                     request.Username = SparkOidcTokenProvider.ResolveUsername(Properties);
                     break;
-                    // NoSasl/Kerberos: identity comes from the SASL/GSSAPI transport layer (or
-                    // is unauthenticated), not from TOpenSessionReq fields.
+                    // NoSasl: unauthenticated, so there are no TOpenSessionReq identity fields.
             }
             switch (authTypeValue)
             {
                 case SparkAuthType.Basic:
-                case SparkAuthType.Ldap:
                 case SparkAuthType.Empty when !string.IsNullOrEmpty(password):
                     request.Password = password!;
                     break;
@@ -300,6 +257,17 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
             Properties.TryGetValue(SparkParameters.DataTypeConv, out string? dataTypeConv);
             DataTypeConversion = DataTypeConversionParser.Parse(dataTypeConv);
             TlsOptions = HiveServer2TlsImpl.GetStandardTlsOptions(Properties);
+
+            // The HTTP connections read this option; the binary one did not, so OpenSession was
+            // always capped at the 30s default. A cold Kyuubi launches its Spark engine while the
+            // session opens, which can take minutes. 0 means no limit, as for the HTTP variant.
+            if (Properties.TryGetValue(SparkParameters.ConnectTimeoutMilliseconds, out string? connectTimeoutMs)
+                && !string.IsNullOrEmpty(connectTimeoutMs))
+            {
+                ConnectTimeoutMilliseconds = int.TryParse(connectTimeoutMs, NumberStyles.Integer, CultureInfo.InvariantCulture, out int connectTimeoutMsValue) && connectTimeoutMsValue >= 0
+                    ? connectTimeoutMsValue
+                    : throw new ArgumentOutOfRangeException(SparkParameters.ConnectTimeoutMilliseconds, connectTimeoutMs, $"must be a value of 0 (infinite) or between 1 .. {int.MaxValue}. default is 30000 milliseconds.");
+            }
         }
 
         internal override IArrowArrayStream NewReader<T>(T statement, Schema schema, IResponse response, TGetResultSetMetadataResp? metadataResp = null) =>

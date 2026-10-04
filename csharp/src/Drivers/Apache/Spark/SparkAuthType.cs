@@ -28,8 +28,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         // matching dbt-oss's `spark.auth_type` values exactly (see SparkAuthTypeConstants).
         Plain,
         NoSasl,
-        Ldap,
-        Kerberos,
         // Keycloak/Azure client_credentials JWT, fetched by the driver and sent as the
         // SASL PLAIN password (see SparkOidcTokenProvider).
         Oidc,
@@ -66,12 +64,6 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                     return true;
                 case SparkAuthTypeConstants.NoSasl:
                     authTypeValue = SparkAuthType.NoSasl;
-                    return true;
-                case SparkAuthTypeConstants.Ldap:
-                    authTypeValue = SparkAuthType.Ldap;
-                    return true;
-                case SparkAuthTypeConstants.Kerberos:
-                    authTypeValue = SparkAuthType.Kerberos;
                     return true;
                 case SparkAuthTypeConstants.Oidc:
                     authTypeValue = SparkAuthType.Oidc;
