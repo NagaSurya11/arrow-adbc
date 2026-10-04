@@ -30,6 +30,9 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         NoSasl,
         Ldap,
         Kerberos,
+        // Keycloak/Azure client_credentials JWT, fetched by the driver and sent as the
+        // SASL PLAIN password (see SparkOidcTokenProvider).
+        Oidc,
         Empty = int.MaxValue,
     }
 
@@ -69,6 +72,9 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                     return true;
                 case SparkAuthTypeConstants.Kerberos:
                     authTypeValue = SparkAuthType.Kerberos;
+                    return true;
+                case SparkAuthTypeConstants.Oidc:
+                    authTypeValue = SparkAuthType.Oidc;
                     return true;
                 default:
                     authTypeValue = default;

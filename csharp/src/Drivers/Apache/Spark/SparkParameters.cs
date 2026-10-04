@@ -60,6 +60,17 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         /// not a rename — no legacy equivalent exists.</summary>
         public const string KerberosServiceName = "spark.kerberos.service_name";
 
+        // OIDC (OAuth2 client_credentials) options, sent by dbt as `spark.oidc.*` when
+        // `spark.auth_type` is "oidc". The same request works for Keycloak and Azure
+        // Entra ID; only the values differ (Azure: scope = "<api-uri>/.default").
+        public const string OidcTokenUrl = "spark.oidc.token_url";
+        public const string OidcClientId = "spark.oidc.client_id";
+        public const string OidcClientSecret = "spark.oidc.client_secret";
+        public const string OidcScope = "spark.oidc.scope";
+        /// <summary>Optional override (seconds) of how long a fetched token is reused;
+        /// default 150, and never more than half of the token's own expires_in.</summary>
+        public const string OidcRefreshSeconds = "spark.oidc.refresh_seconds";
+
         /// <summary>
         /// TLS enable/disable, matching dbt profiles.yml's `use_ssl` field and following
         /// this driver's own bare "spark.*" naming convention. NOT forwarded by dbt-oss's
@@ -106,7 +117,14 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                 bool hasNew = properties.TryGetValue(newKey, out string? newValue) && !string.IsNullOrEmpty(newValue);
                 if (!hasNew && properties.TryGetValue(legacyKey, out string? legacyValue) && !string.IsNullOrEmpty(legacyValue))
                 {
-                    merged ??= new Dictionary<string, string>(properties);
+                    if (merged == null)
+                    {
+                        merged = new Dictionary<string, string>();
+                        foreach (KeyValuePair<string, string> entry in properties)
+                        {
+                            merged[entry.Key] = entry.Value;
+                        }
+                    }
                     merged[newKey] = legacyValue;
                 }
             }
@@ -137,6 +155,7 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
         public const string NoSasl = "nosasl";
         public const string Ldap = "ldap";
         public const string Kerberos = "kerberos";
+        public const string Oidc = "oidc";
     }
 
     public static class SparkServerTypeConstants

@@ -92,6 +92,9 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                             $"Parameter '{SparkParameters.AuthType}' is set to '{SparkAuthTypeConstants.Kerberos}' but parameter '{SparkParameters.KerberosServiceName}' is not set. Please provide a value for this parameter.",
                             nameof(Properties));
                     break;
+                case SparkAuthType.Oidc:
+                    SparkOidcTokenProvider.ValidateOptions(Properties);
+                    break;
                 default:
                     throw new ArgumentOutOfRangeException(SparkParameters.AuthType, authType, $"Unsupported {SparkParameters.AuthType} value.");
             }
@@ -187,47 +190,58 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                 // transport — this is the actual auth-type contract dbt-oss's Rust core
                 // sends (see ValidateAuthentication above).
                 case SparkAuthType.Plain:
-                {
-                    Properties.TryGetValue(AdbcOptions.Username, out string? plainUsername);
-                    Properties.TryGetValue(AdbcOptions.Password, out string? plainPassword);
-                    if (string.IsNullOrWhiteSpace(plainUsername))
                     {
-                        throw new InvalidOperationException($"'{AdbcOptions.Username}' must be provided for PLAIN authentication.");
+                        Properties.TryGetValue(AdbcOptions.Username, out string? plainUsername);
+                        Properties.TryGetValue(AdbcOptions.Password, out string? plainPassword);
+                        if (string.IsNullOrWhiteSpace(plainUsername))
+                        {
+                            throw new InvalidOperationException($"'{AdbcOptions.Username}' must be provided for PLAIN authentication.");
+                        }
+                        PlainSaslMechanism plainMechanism = new(plainUsername!, plainPassword ?? string.Empty);
+                        TSaslTransport plainSaslTransport = new(bufferedTransport, plainMechanism, config: new());
+                        return new TFramedTransport(plainSaslTransport);
                     }
-                    PlainSaslMechanism plainMechanism = new(plainUsername!, plainPassword ?? string.Empty);
-                    TSaslTransport plainSaslTransport = new(bufferedTransport, plainMechanism, config: new());
-                    return new TFramedTransport(plainSaslTransport);
-                }
 
                 case SparkAuthType.NoSasl:
                     return bufferedTransport;
 
                 case SparkAuthType.Ldap:
-                {
-                    Properties.TryGetValue(AdbcOptions.Username, out string? ldapUsername);
-                    Properties.TryGetValue(AdbcOptions.Password, out string? ldapPassword);
-                    if (string.IsNullOrWhiteSpace(ldapUsername) || string.IsNullOrWhiteSpace(ldapPassword))
                     {
-                        throw new InvalidOperationException($"'{AdbcOptions.Username}' and '{AdbcOptions.Password}' must be provided for LDAP authentication.");
+                        Properties.TryGetValue(AdbcOptions.Username, out string? ldapUsername);
+                        Properties.TryGetValue(AdbcOptions.Password, out string? ldapPassword);
+                        if (string.IsNullOrWhiteSpace(ldapUsername) || string.IsNullOrWhiteSpace(ldapPassword))
+                        {
+                            throw new InvalidOperationException($"'{AdbcOptions.Username}' and '{AdbcOptions.Password}' must be provided for LDAP authentication.");
+                        }
+                        // HiveServer2/Kyuubi's LDAP support validates credentials server-side via
+                        // an LDAP bind; the wire-level SASL mechanism is still PLAIN.
+                        PlainSaslMechanism ldapMechanism = new(ldapUsername!, ldapPassword!);
+                        TSaslTransport ldapSaslTransport = new(bufferedTransport, ldapMechanism, config: new());
+                        return new TFramedTransport(ldapSaslTransport);
                     }
-                    // HiveServer2/Kyuubi's LDAP support validates credentials server-side via
-                    // an LDAP bind; the wire-level SASL mechanism is still PLAIN.
-                    PlainSaslMechanism ldapMechanism = new(ldapUsername!, ldapPassword!);
-                    TSaslTransport ldapSaslTransport = new(bufferedTransport, ldapMechanism, config: new());
-                    return new TFramedTransport(ldapSaslTransport);
-                }
 
                 case SparkAuthType.Kerberos:
-                {
-                    Properties.TryGetValue(SparkParameters.KerberosServiceName, out string? kerberosServiceName);
-                    if (string.IsNullOrWhiteSpace(kerberosServiceName))
                     {
-                        throw new InvalidOperationException($"'{SparkParameters.KerberosServiceName}' must be provided for KERBEROS authentication.");
+                        Properties.TryGetValue(SparkParameters.KerberosServiceName, out string? kerberosServiceName);
+                        if (string.IsNullOrWhiteSpace(kerberosServiceName))
+                        {
+                            throw new InvalidOperationException($"'{SparkParameters.KerberosServiceName}' must be provided for KERBEROS authentication.");
+                        }
+                        GssapiSaslMechanism gssapiMechanism = new(kerberosServiceName!, hostName!);
+                        TSaslTransport gssapiSaslTransport = new(bufferedTransport, gssapiMechanism, config: new());
+                        return new TFramedTransport(gssapiSaslTransport);
                     }
-                    GssapiSaslMechanism gssapiMechanism = new(kerberosServiceName!, hostName!);
-                    TSaslTransport gssapiSaslTransport = new(bufferedTransport, gssapiMechanism, config: new());
-                    return new TFramedTransport(gssapiSaslTransport);
-                }
+
+                case SparkAuthType.Oidc:
+                    {
+                        // Fetched (or served from the in-process cache) on every connection open,
+                        // so a long-lived process never presents an expired token. The server
+                        // validates the JWT in the SASL PLAIN password slot.
+                        string oidcToken = SparkOidcTokenProvider.GetToken(Properties);
+                        PlainSaslMechanism oidcMechanism = new(SparkOidcTokenProvider.ResolveUsername(Properties), oidcToken);
+                        TSaslTransport oidcSaslTransport = new(bufferedTransport, oidcMechanism, config: new());
+                        return new TFramedTransport(oidcSaslTransport);
+                    }
 
                 default:
                     throw new NotSupportedException($"Authentication type '{authTypeValue}' is not supported.");
@@ -264,8 +278,11 @@ namespace Apache.Arrow.Adbc.Drivers.Apache.Spark
                 case SparkAuthType.Empty when !string.IsNullOrEmpty(username):
                     request.Username = username!;
                     break;
-                // NoSasl/Kerberos: identity comes from the SASL/GSSAPI transport layer (or
-                // is unauthenticated), not from TOpenSessionReq fields.
+                case SparkAuthType.Oidc:
+                    request.Username = SparkOidcTokenProvider.ResolveUsername(Properties);
+                    break;
+                    // NoSasl/Kerberos: identity comes from the SASL/GSSAPI transport layer (or
+                    // is unauthenticated), not from TOpenSessionReq fields.
             }
             switch (authTypeValue)
             {
